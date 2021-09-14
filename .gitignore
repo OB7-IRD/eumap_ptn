@@ -39,5 +39,6 @@ vignettes/*.pdf
 .Renviron
 *.yml
 
-# Outputs directory
+# Outputs directory and personal archives
 outputs/
+_archives/

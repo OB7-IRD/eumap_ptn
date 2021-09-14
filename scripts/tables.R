@@ -2,7 +2,7 @@
 library(furdeb)
 library(readxl)
 library(dplyr)
-config <- furdeb::configuration_file(path_file = "D:\\projets_themes\\dpma\\ptn\\ptn_2022_2024\\data\\configfile_ptn_2022_2024_mathieu.yml",
+config <- furdeb::configuration_file(path_file = "D:\\projets_themes\\dpma\\eumap_ptn\\data\\configfile_ptn_2022_2024_mathieu.yml",
                                      silent = TRUE)
 
 # parameters  ----
@@ -535,6 +535,80 @@ table_2_1_final <- table_2_1 %>%
          -selected_sampling)
 
 # table 2.5 ----
+# template importation
+template_2_5 <- read_xlsx(path = paste0(config[["wd_path"]],
+                                        "\\data\\2021.07.19_WP_2022-2024_TABLES_IRD.xlsx"),
+                          sheet = "Table 2.5 Sampling plan biol",
+                          range = cell_limits(ul = c(2, 1),
+                                              lr = c(2, 22)))
+
+# sql queries
+number_trips_sql <- paste(readLines(con = paste0(config[["wd_path"]],
+                                                 "\\scripts\\sql\\table_2_5_number_trips.sql")),
+                          collapse = "\n")
+number_trips_sql_final <- DBI::sqlInterpolate(conn = observe_con,
+                                              sql = number_trips_sql,
+                                              period = DBI::SQL(paste0(periode_reference,
+                                                                       collapse = ", ")),
+                                              countries = DBI::SQL(paste0(paste0(countries,
+                                                                                 collapse = ", "))))
+
+number_trips <- DBI::dbGetQuery(conn = t3_con,
+                                statement = number_trips_sql_final)
+
+# design
+number_trips_final <- number_trips %>%
+  mutate(rfmo = case_when(
+    ocean_code == 1 ~ "ICCAT",
+    ocean_code == 2 ~ "IOTC",
+    is.na(ocean_code) & harbour_name %in% c("POBRA DO CARAMINAL", "RIBEIRA") ~ "ICCAT",
+    TRUE ~ "error"
+  )) %>%
+  filter(vessel_type_code %in% c(1, 2)) %>%
+  group_by(landing_year,
+           rfmo,
+           vessel_type_code) %>%
+  summarise(count = n(),
+            .groups = "drop") %>%
+  arrange(landing_year,
+          rfmo,
+          vessel_type_code)
+
+for (rfmo_id in unique(number_trips_final$rfmo)) {
+  number_trips_final_rfmo <- filter(.data = number_trips_final,
+                                    rfmo == rfmo_id)
+  for (vessel_type in unique(number_trips_final_rfmo$vessel_type_code)) {
+    number_trips_final_rfmo_vesseltype <- filter(.data = number_trips_final_rfmo,
+                                                 vessel_type_code == vessel_type)
+    if (! all(periode_reference %in% number_trips_final_rfmo_vesseltype$landing_year)) {
+      for (new_year in setdiff(x = periode_reference,
+                               y = number_trips_final_rfmo_vesseltype$landing_year)) {
+        number_trips_final <- rbind(number_trips_final,
+                                    data.frame("landing_year" = new_year,
+                                               "rfmo" = rfmo_id,
+                                               "vessel_type_code" = vessel_type,
+                                               "count" = 0))
+      }
+      rm(new_year)
+    }
+  }
+}
+rm(rfmo_id,
+   vessel_type,
+   number_trips_final_rfmo,
+   number_trips_final_rfmo_vesseltype)
+
+number_trips_final <- number_trips_final %>%
+  group_by(rfmo,
+           vessel_type_code) %>%
+  summarise(`Average number of PSUs during the reference period` = mean(count),
+            .groups = "drop") %>%
+  mutate(vessel_type = case_when(
+    vessel_type_code == 1 ~ "PS",
+    vessel_type_code == 2 ~ "BB",
+    TRUE ~ "error"
+  )) %>%
+  select(-vessel_type_code)
 
 # extraction ----
 write.csv2(x = table_2_1_final,
@@ -553,10 +627,10 @@ write.csv2(x = table_2_2,
                          ,"_table_2_2.csv"),
            row.names = FALSE)
 
-
-
-
-
-
-
-
+write.csv2(x = number_trips_final,
+           file = paste0(config[["output_path"]],
+                         "\\",
+                         format(Sys.time()
+                                ,"%Y%m%d_%H%M%S")
+                         ,"_table_2_5.csv"),
+           row.names = FALSE)
