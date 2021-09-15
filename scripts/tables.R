@@ -251,29 +251,22 @@ landings_samples_sql_final <- DBI::sqlInterpolate(conn = t3_con,
 
 landings_samples <- DBI::dbGetQuery(conn = t3_con,
                                     statement = landings_samples_sql_final)
-# design on landings length samples
-landings_samples_length <- landings_samples %>%
-  group_by(landing_year,
-           ocean_code,
-           specie_name) %>%
-  summarise(number_sample = sum(count),
-            .groups = "drop") %>%
-  group_by(ocean_code,
-           specie_name) %>%
-  summarise(count = n(),
-            .groups = "drop") %>%
-  filter(count >= 3) %>%
-  mutate(covered_length = "Y",
-         Region = "Other regions",
-         `RFMO/RFO/IO` = case_when(
-           ocean_code == 1 ~ "ICCAT",
-           ocean_code == 2 ~ "IOTC",
-           TRUE ~ "error"
-         )) %>%
-  rename(`Species` = specie_name) %>%
-  select(-ocean_code,
-         -count)
-# design on biological variables sampled (all variables except length from observe database)
+
+ll_samples_sql <- paste(readLines(con = paste0(config[["wd_path"]],
+                                               "\\scripts\\sql\\table_2_2_ll_samples.sql")),
+                        collapse = "\n")
+ll_samples_sql_final <- DBI::sqlInterpolate(conn = observe_con,
+                                            sql = ll_samples_sql,
+                                            period = DBI::SQL(paste0(periode_reference,
+                                                                     collapse = ", ")),
+                                            countries = DBI::SQL(paste0(paste0(countries,
+                                                                               collapse = ", "))))
+
+ll_samples <- DBI::dbGetQuery(conn = observe_con,
+                              statement = ll_samples_sql_final)
+
+# design on biological variables sampled (from observe database)
+# on non PS target species
 ps_biological_variables_offshore <- data.frame()
 for (year in unique(ps_nontarget_samples$sampling_year)) {
   ps_nontarget_samples_year <- filter(.data = ps_nontarget_samples,
@@ -333,6 +326,7 @@ rm(ps_nontarget_samples_year,
    ps_nontarget_samples_year_ocean,
    ps_nontarget_samples_year_ocean_specie)
 
+# on PS target species
 for (year in unique(ps_target_samples$sampling_year)) {
   ps_target_samples_year <- filter(.data = ps_target_samples,
                                    sampling_year == year)
@@ -391,47 +385,135 @@ rm(ps_target_samples_year,
    ps_target_samples_year_ocean,
    ps_target_samples_year_ocean_specie)
 
+# on ll species
+ll_samples <- filter(.data = ll_samples,
+                     ! is.na(x = size)
+                     | ! is.na(weight)
+                     | ! is.na(sex)
+                     | ! is.na(maturity))
+
+ll_samples_final <- data.frame()
+for (year in unique(ll_samples$setting_end_year)) {
+  ll_samples_year <- filter(.data = ll_samples,
+                            setting_end_year == year)
+  for (rfmo in unique(ll_samples_year$ocean_code)) {
+    ll_samples_year_rfmo <- filter(.data = ll_samples_year,
+                                   ocean_code = )
+    for (specie in unique(ll_samples_year_rfmo$specie_name)) {
+      ll_samples_year_rfmo_specie <- filter(.data = ll_samples_year_rfmo,
+                                            specie_name == specie)
+      ll_samples_final <- rbind(ll_samples_final,
+                                data.frame("year" = year,
+                                           "region" = "Other regions",
+                                           "rfmo" = rfmo,
+                                           "specie" = specie,
+                                           "biological_variable" = "Length",
+                                           "number_sample" = sum(unique(ll_samples_year_rfmo_specie[,c("catch_id",
+                                                                                                       "count")])$count)),
+                                data.frame("year" = year,
+                                           "region" = "Other regions",
+                                           "rfmo" = rfmo,
+                                           "specie" = specie,
+                                           "biological_variable" = "Age",
+                                           "number_sample" = 0),
+                                data.frame("year" = year,
+                                           "region" = "Other regions",
+                                           "rfmo" = rfmo,
+                                           "specie" = specie,
+                                           "biological_variable" = "Weight",
+                                           "number_sample" = sum(unique(ll_samples_year_rfmo_specie[! is.na(ll_samples_year_rfmo_specie$weight), c("catch_id",
+                                                                                                                                                   "weight",
+                                                                                                                                                   "count")])$count)),
+                                data.frame("year" = year,
+                                           "region" = "Other regions",
+                                           "rfmo" = rfmo,
+                                           "specie" = specie,
+                                           "biological_variable" = "Sex",
+                                           "number_sample" = sum(unique(ll_samples_year_rfmo_specie[! is.na(ll_samples_year_rfmo_specie$sex)
+                                                                                                    & ll_samples_year_rfmo_specie$sex %in% c("Male",
+                                                                                                                                             "Female",
+                                                                                                                                             "Juvenile"),
+                                                                                                    c("catch_id",
+                                                                                                      "sex",
+                                                                                                      "count")])$count)),
+                                data.frame("year" = year,
+                                           "region" = "Other regions",
+                                           "rfmo" = rfmo,
+                                           "specie" = specie,
+                                           "biological_variable" = "Maturity",
+                                           "number_sample" = sum(unique(ll_samples_year_rfmo_specie[! is.na(ll_samples_year_rfmo_specie$maturity),
+                                                                                                    c("catch_id",
+                                                                                                      "maturity",
+                                                                                                      "count")])$count)),
+                                data.frame("year" = year,
+                                           "region" = "Other regions",
+                                           "rfmo" = rfmo,
+                                           "specie" = specie,
+                                           "biological_variable" = "Fecundity",
+                                           "number_sample" = 0))
+    }
+  }
+}
+rm(year,
+   ll_samples_year,
+   rfmo,
+   ll_samples_year_rfmo,
+   specie,
+   ll_samples_year_rfmo_specie)
+
+# merge of PS and LL samples
+ps_ll_biological_variables_offshore <- bind_rows(ps_biological_variables_offshore,
+                                                 ll_samples_final) %>%
+  group_by(year,
+           region,
+           rfmo,
+           specie,
+           biological_variable) %>%
+  summarise(number_sample = sum(number_sample),
+            .groups = "drop")
+
+# add null samples for non sampled year/biological variable
 biological_variables_template <- c("Age",
                                    "Weight",
                                    "Sex",
                                    "Maturity",
                                    "Fecundity")
-ps_biological_variables_offshore_new <- data.frame()
-for (ocean in unique(filter(.data = ps_biological_variables_offshore,
+ps_ll_biological_variables_offshore_new <- data.frame()
+for (ocean in unique(filter(.data = ps_ll_biological_variables_offshore,
                             biological_variable != "Length")$rfmo)) {
-  ps_biological_variables_offshore_ocean <- filter(.data = ps_biological_variables_offshore,
-                                                   rfmo == ocean
-                                                   & biological_variable != "Length")
-  for (specie_id in unique(ps_biological_variables_offshore_ocean$specie)) {
-    ps_biological_variables_offshore_ocean_specie <- filter(.data = ps_biological_variables_offshore_ocean,
-                                                            specie == specie_id)
-    for (biological_variable_id in unique(ps_biological_variables_offshore_ocean_specie$biological_variable)) {
-      ps_biological_variables_offshore_ocean_specie_biovariable <- filter(.data = ps_biological_variables_offshore_ocean_specie,
-                                                                          biological_variable == biological_variable_id)
-      if (nrow(x = ps_biological_variables_offshore_ocean_specie_biovariable) != length(periode_reference)) {
+  ps_ll_biological_variables_offshore_ocean <- filter(.data = ps_ll_biological_variables_offshore,
+                                                      rfmo == ocean
+                                                      & biological_variable != "Length")
+  for (specie_id in unique(ps_ll_biological_variables_offshore_ocean$specie)) {
+    ps_ll_biological_variables_offshore_ocean_specie <- filter(.data = ps_ll_biological_variables_offshore_ocean,
+                                                               specie == specie_id)
+    for (biological_variable_id in unique(ps_ll_biological_variables_offshore_ocean_specie$biological_variable)) {
+      ps_ll_biological_variables_offshore_ocean_specie_biovariable <- filter(.data = ps_ll_biological_variables_offshore_ocean_specie,
+                                                                             biological_variable == biological_variable_id)
+      if (nrow(x = ps_ll_biological_variables_offshore_ocean_specie_biovariable) != length(periode_reference)) {
         for (new_year in setdiff(x = periode_reference,
-                                 y = ps_biological_variables_offshore_ocean_specie_biovariable$year)) {
-          ps_biological_variables_offshore_new <- rbind(ps_biological_variables_offshore_new,
-                                                        data.frame("year" = new_year,
-                                                                   "region" = "Other regions",
-                                                                   "rfmo" = ocean,
-                                                                   "specie" = specie_id,
-                                                                   "biological_variable" = biological_variable_id,
-                                                                   "number_sample" = 0))
+                                 y = ps_ll_biological_variables_offshore_ocean_specie_biovariable$year)) {
+          ps_ll_biological_variables_offshore_new <- rbind(ps_ll_biological_variables_offshore_new,
+                                                           data.frame("year" = new_year,
+                                                                      "region" = "Other regions",
+                                                                      "rfmo" = ocean,
+                                                                      "specie" = specie_id,
+                                                                      "biological_variable" = biological_variable_id,
+                                                                      "number_sample" = 0))
         }
       }
     }
-    if (! all(biological_variables_template %in% unique(ps_biological_variables_offshore_ocean_specie$biological_variable))) {
+    if (! all(biological_variables_template %in% unique(ps_ll_biological_variables_offshore_ocean_specie$biological_variable))) {
       for (new_variable in setdiff(x = biological_variables_template,
-                                   y = unique(ps_biological_variables_offshore_ocean_specie$biological_variable))) {
+                                   y = unique(ps_ll_biological_variables_offshore_ocean_specie$biological_variable))) {
         for (new_year in periode_reference) {
-          ps_biological_variables_offshore_new <- rbind(ps_biological_variables_offshore_new,
-                                                        data.frame("year" = new_year,
-                                                                   "region" = "Other regions",
-                                                                   "rfmo" = ocean,
-                                                                   "specie" = specie_id,
-                                                                   "biological_variable" = new_variable,
-                                                                   "number_sample" = 0))
+          ps_ll_biological_variables_offshore_new <- rbind(ps_ll_biological_variables_offshore_new,
+                                                           data.frame("year" = new_year,
+                                                                      "region" = "Other regions",
+                                                                      "rfmo" = ocean,
+                                                                      "specie" = specie_id,
+                                                                      "biological_variable" = new_variable,
+                                                                      "number_sample" = 0))
         }
       }
     }
@@ -442,13 +524,14 @@ rm(ocean,
    biological_variable_id,
    new_year,
    new_variable,
-   ps_biological_variables_offshore_ocean,
-   ps_biological_variables_offshore_ocean_specie,
-   ps_biological_variables_offshore_ocean_specie_biovariable)
+   ps_ll_biological_variables_offshore_ocean,
+   ps_ll_biological_variables_offshore_ocean_specie,
+   ps_ll_biological_variables_offshore_ocean_specie_biovariable)
 
-ps_biological_variables_offshore_final <- filter(.data = ps_biological_variables_offshore,
-                                                 biological_variable != "Length") %>%
-  bind_rows(ps_biological_variables_offshore_new) %>%
+# final design for biological variables (for PS and LL, except length variable)
+ps_ll_biological_variables_offshore_final <- filter(.data = ps_ll_biological_variables_offshore,
+                                                    biological_variable != "Length") %>%
+  bind_rows(ps_ll_biological_variables_offshore_new) %>%
   group_by(region,
            rfmo,
            specie,
@@ -474,16 +557,16 @@ ps_biological_variables_offshore_final <- filter(.data = ps_biological_variables
          `Biological variable` = biological_variable,
          average_individuals_sampled_last_3_years = mean_samples) %>%
   arrange(`RFMO/RFO/IO`,
-           `Species`,
-           `Biological variable`)
+          `Species`,
+          `Biological variable`)
 
 table_2_2 <- template_2_2[-c(1:nrow(template_2_2)),] %>%
-  bind_rows(ps_biological_variables_offshore_final) %>%
+  bind_rows(ps_ll_biological_variables_offshore_final) %>%
   mutate(`Implementation year` = "2022-2024")
 
-# design on offshore length samples
-ps_biological_variables_offshore_length <- filter(.data = ps_biological_variables_offshore,
-                                                  biological_variable == "Length") %>%
+# design on offshore length samples (from observe database)
+ps_ll_biological_variables_offshore_length <- filter(.data = ps_ll_biological_variables_offshore,
+                                                     biological_variable == "Length") %>%
   group_by(region,
            rfmo,
            specie) %>%
@@ -501,21 +584,44 @@ ps_biological_variables_offshore_length <- filter(.data = ps_biological_variable
   select(-count,
          -rfmo)
 
+# design on landings length samples (from t3 database)
+landings_samples_length <- landings_samples %>%
+  group_by(landing_year,
+           ocean_code,
+           specie_name) %>%
+  summarise(number_sample = sum(count),
+            .groups = "drop") %>%
+  group_by(ocean_code,
+           specie_name) %>%
+  summarise(count = n(),
+            .groups = "drop") %>%
+  filter(count >= 3) %>%
+  mutate(covered_length = "Y",
+         Region = "Other regions",
+         `RFMO/RFO/IO` = case_when(
+           ocean_code == 1 ~ "ICCAT",
+           ocean_code == 2 ~ "IOTC",
+           TRUE ~ "error"
+         )) %>%
+  rename(`Species` = specie_name) %>%
+  select(-ocean_code,
+         -count)
+
 # Link with the table 2.1 and biological variables sampled
-final_samples_length <- full_join(x = ps_biological_variables_offshore_length,
+final_samples_length <- full_join(x = ps_ll_biological_variables_offshore_length,
                                   y = landings_samples_length,
                                   by = c("Region",
                                          "Species",
                                          "covered_length",
                                          "RFMO/RFO/IO"))
 
-ps_biological_variables_sampling <- unique(ps_biological_variables_offshore_final[,c("Region",
-                                                                                     "RFMO/RFO/IO",
-                                                                                     "Species")]) %>%
+ps_ll_biological_variables_sampling <- unique(ps_ll_biological_variables_offshore_final[,c("Region",
+                                                                                           "RFMO/RFO/IO",
+                                                                                           "Species")]) %>%
   mutate("selected_sampling" = "Y")
 
 table_2_1_final <- table_2_1 %>%
-  left_join(ps_biological_variables_sampling,
+  left_join(ps_ll_biological_variables_sampling,
             by = c("Region",
                    "RFMO/RFO/IO",
                    "Species")) %>%
