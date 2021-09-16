@@ -48,44 +48,6 @@ template_2_1 <- read_xlsx(path = paste0(config[["wd_path"]],
                           range = cell_limits(ul = c(2, 1),
                                               lr = c(NA, 16)))
 
-landings_sql <- paste(readLines(con = paste0(config[["wd_path"]],
-                                             "\\scripts\\sql\\table_2_1_average_landings.sql")),
-                      collapse = "\n")
-landings_sql_final <- DBI::sqlInterpolate(conn = t3_con,
-                                          sql = landings_sql,
-                                          period = DBI::SQL(paste0(periode_reference,
-                                                                   collapse = ", ")),
-                                          countries = DBI::SQL(paste0("'",
-                                                                      paste0(countries,
-                                                                             collapse = "', '"),
-                                                                      "'")))
-
-landings <- DBI::dbGetQuery(conn = t3_con,
-                            statement = landings_sql_final)
-
-# manual correction link to missing information in the database referential (github ticket https://github.com/OB7-IRD/data-analysis/issues/128)
-# no necessary after ticket resolution
-for (a in seq_len(length.out = nrow(landings))) {
-  if (landings[a, "label1"] %in% c("RIBEIRA", "POBRA DO CARAMINAL")) {
-    landings[a, "ocean_code"] <- 1
-  }
-}
-
-if (any(is.na(landings$ocean_code))) {
-  stop("problem with the harbour-ocean referential")
-}
-
-# design for landings
-landings_final <- landings %>%
-  group_by(ocean_code, specie_code, specie_name) %>%
-  summarise(mean_weight_t = mean(x = weight_t),
-            .groups = "drop") %>%
-  mutate(rfmo = case_when(
-    ocean_code == 1 ~ "ICCAT",
-    ocean_code == 2 ~ "IOTC",
-    TRUE ~ "Referential_error"
-  ))
-
 # design for IOTC data
 # work to do on the species from the PTN to optimise the correspondence with the RFMOs data
 iotc_data_landings <- iotc_data %>%
@@ -122,7 +84,8 @@ iotc_data_landings <- filter(.data = iotc_data_landings,
 # design for ICCAT data
 # same comment than for IOTC data (example with Mobula spp.)
 iccat_data_landings <- iccat_data %>%
-  group_by(Fleet, ScieName) %>%
+  group_by(Fleet,
+           ScieName) %>%
   summarise(total_landings = sum(Qty_t),
             .groups = "drop")
 
@@ -152,13 +115,53 @@ iccat_data_landings <- filter(.data = iccat_data_landings,
   ungroup() %>%
   filter(Fleet == "EU.FRA_total")
 
+# average FRA landings (from ICCAT and IOTC data)
+iccat_data_landings_fr <- filter(.data = iccat_data,
+                                 substr(x = Fleet,
+                                        start = 1,
+                                        stop = 6) == "EU.FRA") %>%
+  group_by(YearC,
+           ScieName) %>%
+  summarise(total_landings = sum(Qty_t),
+            .groups = "drop") %>%
+  group_by(ScieName) %>%
+  summarise(average_landings = sum(total_landings) / length(periode_reference),
+            .groups = "drop") %>%
+  mutate(`RFMO/RFO/IO` = "ICCAT",
+         ScieName = case_when(
+           ScieName == "Makaira nigricans" ~ "Makaira nigricans (or mazara)",
+           ScieName == "Carcharhinidae" ~ "Carcharhinus spp.",
+           ScieName == "Mobulidae" ~ "Mobula spp.",
+           TRUE ~ ScieName
+         )) %>%
+  rename(Species = ScieName)
+
+iotc_data_landings_fr <- filter(.data = iotc_data,
+                                substr(x = Fleet,
+                                       start = 1,
+                                       stop = 9) == "EU.FRANCE") %>%
+  group_by(`Year/An`,
+           SpLat) %>%
+  summarise(total_landings = sum(`Catch/Capture(t)`),
+            .groups = "drop") %>%
+  group_by(SpLat) %>%
+  summarise(average_landings = sum(total_landings) / length(periode_reference),
+            .groups = "drop") %>%
+  mutate(`RFMO/RFO/IO` = "IOTC",
+         SpLat = case_when(
+           SpLat == "Makaira nigricans" ~ "Makaira nigricans (or mazara)",
+           SpLat == "Carcharhinus falciformis" ~ "Carcharhinus falciformes",
+           SpLat == "Carcharhinidae" ~ "Carcharhinus spp.",
+           TRUE ~ SpLat
+         )) %>%
+  rename(Species = SpLat)
+
 table_2_1 <- filter(.data = template_2_1,
                     `RFMO/RFO/IO` %in% c("ICCAT", "IOTC")) %>%
-  left_join(landings_final[, c("specie_name",
-                               "rfmo",
-                               "mean_weight_t")],
-            by = c("RFMO/RFO/IO" = "rfmo",
-                   "Species" = "specie_name")) %>%
+  left_join(bind_rows(iccat_data_landings_fr,
+                      iotc_data_landings_fr),
+            by = c("RFMO/RFO/IO",
+                   "Species")) %>%
   left_join(iotc_data_landings[, c("rfmo"
                                    ,"SpLat"
                                    ,"percentage_landings_iotc")],
@@ -169,13 +172,13 @@ table_2_1 <- filter(.data = template_2_1,
                                     "percentage_landings_iccat")],
             by = c("RFMO/RFO/IO" = "rfmo",
                    "Species" = "ScieName")) %>%
-  mutate(`Average landings in the reference years (tonnes)` = as.character(trunc(mean_weight_t)),
+  mutate(`Average landings in the reference years (tonnes)` = as.character(trunc(average_landings)),
          `Average landings in the reference years (tonnes)` = case_when(
-           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") & is.na(mean_weight_t) ~ "None",
+           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") & is.na(average_landings) ~ "None",
            TRUE ~ `Average landings in the reference years (tonnes)`
          ),
          `Data source used for average national landings` =  case_when(
-           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "Logbooks",
+           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "RFMO statistics",
            TRUE ~ ""),
          `Data source used for EU landings` =  case_when(
            `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "RFMO statistics",
@@ -200,7 +203,7 @@ table_2_1 <- filter(.data = template_2_1,
          `Regional coordination agreement at stock level` = case_when(
            `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "N",
            TRUE ~ "")) %>%
-  select(-mean_weight_t,
+  select(-average_landings,
          -percentage_landings_iotc,
          -percentage_landings_iccat)
 
