@@ -2,11 +2,12 @@
 library(furdeb)
 library(readxl)
 library(dplyr)
+
 config <- furdeb::configuration_file(path_file = "D:\\projets_themes\\dpma\\eumap_ptn\\data\\configfile_ptn_2022_2024_mathieu.yml",
                                      silent = TRUE)
 
 # parameters  ----
-periode_reference <- as.integer(2017:2019)
+periode_reference <- as.integer(2018:2020)
 countries <- c(1, 41)
 implementation_year <- c(2022:2024)
 
@@ -42,11 +43,10 @@ iccat_data <- read_xlsx(path = paste0(config[["wd_path"]],
          & substr(Fleet, 1, 3) == "EU.")
 
 # table 2.1 ----
-template_2_1 <- read_xlsx(path = paste0(config[["wd_path"]],
-                                        "\\data\\2021.07.19_WP_2022-2024_TABLES_IRD.xlsx"),
-                          sheet = "Table 2.1 Stocks",
-                          range = cell_limits(ul = c(2, 1),
-                                              lr = c(NA, 16)))
+template_2_1 <- read.csv2(file = file.path(config[["wd_path"]],
+                                           "data",
+                                           "eu_map_species.csv",
+                                           fsep = "\\"))
 
 # design for IOTC data
 # work to do on the species from the PTN to optimise the correspondence with the RFMOs data
@@ -157,7 +157,8 @@ iotc_data_landings_fr <- filter(.data = iotc_data,
   rename(Species = SpLat)
 
 table_2_1 <- filter(.data = template_2_1,
-                    `RFMO/RFO/IO` %in% c("ICCAT", "IOTC")) %>%
+                    RFMO %in% c("ICCAT", "IOTC")) %>%
+  rename("RFMO/RFO/IO" = "RFMO") %>%
   left_join(bind_rows(iccat_data_landings_fr,
                       iotc_data_landings_fr),
             by = c("RFMO/RFO/IO",
@@ -180,40 +181,53 @@ table_2_1 <- filter(.data = template_2_1,
          `Data source used for average national landings` =  case_when(
            `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "RFMO statistics",
            TRUE ~ ""),
-         `Data source used for EU landings` =  case_when(
-           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "RFMO statistics",
-           TRUE ~ "")
-         ,`Share (%) in EU landings` = case_when(
+         `EU TAC (if any) (%)` = "",
+         `Share (%) in EU landings` = case_when(
            `RFMO/RFO/IO` == "ICCAT" ~ as.character(percentage_landings_iccat),
            `RFMO/RFO/IO` == "IOTC" ~ as.character(percentage_landings_iotc),
-           TRUE ~ ""
-         ),
-         `Reference period` = case_when(
-           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "2017-2019",
-           TRUE ~ ""
-         ),
-         MS = case_when(
-           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "FRA",
            TRUE ~ ""
          ),
          `Share (%) in EU landings` = case_when(
            `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") & is.na(`Share (%) in EU landings`) ~ "None",
            TRUE ~ `Share (%) in EU landings`
          ),
+         `Data source used for EU landings` =  case_when(
+           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "RFMO statistics",
+           TRUE ~ ""),
+         `Threshold rules used` = "",
+         `Reference period` = case_when(
+           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ paste(first(x = sort(periode_reference)),
+                                                         last(x = sort(periode_reference)),
+                                                         sep = "-"),
+           TRUE ~ ""
+         ),
+         MS = case_when(
+           `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "FRA",
+           TRUE ~ ""
+         ),
          `Regional coordination agreement at stock level` = case_when(
            `RFMO/RFO/IO` %in% c("ICCAT", "IOTC") ~ "N",
-           TRUE ~ "")) %>%
+           TRUE ~ ""),
+         `WP comments` = case_when(
+           Species == "Makaira nigricans (or mazara)" ~ "Identified by \"Makaira nigricans\" in our national database",
+           Species == "Carcharhinus spp." & `RFMO/RFO/IO` == "ICCAT" ~ "Identified by \"Carcharhinidae\" in our national database",
+           Species == "Mobula spp." & `RFMO/RFO/IO` == "ICCAT" ~ "Identified by \"Mobulidae\" in our national database",
+           Species == "Carcharhinus falciformes" & `RFMO/RFO/IO` == "IOTC" ~ "Identified by \"Carcharhinus falciformis\" in our national database",
+           Species == "Carcharhinus spp." & `RFMO/RFO/IO` == "IOTC" ~ "Identified by \"Carcharhinidae\" in our national database",
+           TRUE ~ ""
+         )) %>%
   select(-average_landings,
          -percentage_landings_iotc,
-         -percentage_landings_iccat)
+         -percentage_landings_iccat) %>%
+  relocate(MS,
+           `Reference period`)
 
 # table 2.2 ----
 # template importation
-template_2_2 <- read_xlsx(path = paste0(config[["wd_path"]],
-                                        "\\data\\2021.07.19_WP_2022-2024_TABLES_IRD.xlsx"),
-                          sheet = "Table 2.2 Biol variables",
-                          range = cell_limits(ul = c(2, 1),
-                                              lr = c(NA, 15)))
+template_2_2 <- template_2_1 %>%
+  mutate(by_id = paste(Region, RFMO, Species, Area,
+                       sep = "_"))
+
 # sql queries
 ps_nontarget_samples_sql <- paste(readLines(con = paste0(config[["wd_path"]],
                                                          "\\scripts\\sql\\table_2_2_ps_nontarget_samples.sql")),
@@ -547,7 +561,7 @@ ps_ll_biological_variables_offshore_final <- filter(.data = ps_ll_biological_var
            rfmo == 2 ~ "IOTC",
            TRUE ~ "error"
          ),
-         Area = "All area",
+         Area = "All areas",
          `Observation type` = "SciObsAtSea",
          `Sampling scheme type` = "Commercial fishing trip",
          `Sampling scheme identifier` = paste(`Observation type`,
@@ -563,10 +577,35 @@ ps_ll_biological_variables_offshore_final <- filter(.data = ps_ll_biological_var
           `Species`,
           `Biological variable`)
 
-table_2_2 <- template_2_2[-c(1:nrow(template_2_2)),] %>%
-  bind_rows(ps_ll_biological_variables_offshore_final) %>%
-  mutate(`Implementation year` = "2022-2024")
-
+table_2_2 <- ps_ll_biological_variables_offshore_final %>%
+  mutate(by_id = paste(Region,
+                       `RFMO/RFO/IO`,
+                       Species,
+                       Area,
+                       sep = "_")) %>%
+  filter(by_id %in% template_2_2$by_id) %>%
+  mutate(`Implementation year` = "2022-2024",
+         `Data collection requested by end user` = "",
+         `Opportunistic (O) or planned (P) sampling` = "",
+         `Number of individuals to sample` = "",
+         `WP comments` = case_when(
+           Species == "Makaira nigricans (or mazara)" ~ "Identified by \"Makaira nigricans\" in our national database",
+           Species == "Carcharhinus spp." & `RFMO/RFO/IO` == "ICCAT" ~ "Identified by \"Carcharhinidae\" in our national database",
+           Species == "Mobula spp." & `RFMO/RFO/IO` == "ICCAT" ~ "Identified by \"Mobulidae\" in our national database",
+           Species == "Carcharhinus falciformes" & `RFMO/RFO/IO` == "IOTC" ~ "Identified by \"Carcharhinus falciformis\" in our national database",
+           Species == "Carcharhinus spp." & `RFMO/RFO/IO` == "IOTC" ~ "Identified by \"Carcharhinidae\" in our national database",
+           TRUE ~ ""
+         )) %>%
+  select(-by_id) %>%
+  relocate(MS,
+           `Implementation year`) %>%
+  relocate(average_individuals_sampled_last_3_years, .after = `WP comments`) %>%
+  relocate(Area, .before = `Biological variable`) %>%
+  relocate(`Data collection requested by end user`, .after = `Biological variable`) %>%
+  relocate(`Opportunistic (O) or planned (P) sampling`,
+           `Number of individuals to sample`,
+           .after = `Sampling scheme identifier`)
+  
 # design on offshore length samples (from observe database)
 ps_ll_biological_variables_offshore_length <- filter(.data = ps_ll_biological_variables_offshore,
                                                      biological_variable == "Length") %>%
@@ -641,7 +680,8 @@ table_2_1_final <- table_2_1 %>%
     TRUE ~ "N"
   )) %>%
   select(-covered_length,
-         -selected_sampling)
+         -selected_sampling) %>%
+  relocate(`WP comments`, .after = `Selected for sampling of biological variables`)
 
 # table 2.5 ----
 # template importation
@@ -670,7 +710,9 @@ number_trips_final <- number_trips %>%
   mutate(rfmo = case_when(
     ocean_code == 1 ~ "ICCAT",
     ocean_code == 2 ~ "IOTC",
-    is.na(ocean_code) & harbour_name %in% c("POBRA DO CARAMINAL", "RIBEIRA") ~ "ICCAT",
+    is.na(ocean_code) & harbour_name %in% c("POBRA DO CARAMINAL",
+                                            "RIBEIRA") ~ "ICCAT",
+    is.na(ocean_code) & harbour_name %in% c("DUBAI") ~ "IOTC",
     TRUE ~ "error"
   )) %>%
   filter(vessel_type_code %in% c(1, 2)) %>%
